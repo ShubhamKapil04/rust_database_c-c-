@@ -8,28 +8,26 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/ip.h>
+#include <string>
+#include <vector>
 
-// Prints a simple message to stderr
-static void msg(const char *msg){
+
+static void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
 }
 
-// Prints an error message and exits the program
-static void die(const char *msg){
+static void die(const char *msg) {
     int err = errno;
     fprintf(stderr, "[%d] %s\n", err, msg);
-    exit(1);
-};
+    abort();
+}
 
-// Reads exactly 'n' bytes from a file descriptor into a buffer
-// Useful for reading complete messages
-static int32_t read_full(int fd, char *buf, size_t n){
-    while(n > 0){
+static int32_t read_full(int fd, uint8_t *buf, size_t n) {
+    while (n > 0) {
         ssize_t rv = read(fd, buf, n);
-        if(rv <= 0){
-            return -1; // error or unexpected EOF
+        if (rv <= 0) {
+            return -1;  // error, or unexpected EOF
         }
-
         assert((size_t)rv <= n);
         n -= (size_t)rv;
         buf += rv;
@@ -37,12 +35,11 @@ static int32_t read_full(int fd, char *buf, size_t n){
     return 0;
 }
 
-// Writes exactly 'n' bytes from a buffer to a file descriptor
-static int32_t write_all(int fd, const char *buf, size_t n){
-    while(n > 0){
+static int32_t write_all(int fd, const uint8_t *buf, size_t n) {
+    while (n > 0) {
         ssize_t rv = write(fd, buf, n);
-        if(rv <= 0){
-            return -1; // error
+        if (rv <= 0) {
+            return -1;  // error
         }
         assert((size_t)rv <= n);
         n -= (size_t)rv;
@@ -51,92 +48,97 @@ static int32_t write_all(int fd, const char *buf, size_t n){
     return 0;
 }
 
-const size_t k_max_msg = 4096; // Maximum size of a message
+// append to the back
+static void
+buf_append(std::vector<uint8_t> &buf, const uint8_t *data, size_t len) {
+    buf.insert(buf.end(), data, data + len);
+}
 
-// Sends a message to the server and reads the reply
-static int32_t query(int fd, const char *text){
-    uint32_t len = (uint32_t)strlen(text); // Get length of input message
-    if(len > k_max_msg){
+const size_t k_max_msg = 32 << 20;  // likely larger than the kernel buffer
+
+// the `query` function was simply splited into `send_req` and `read_res`.
+static int32_t send_req(int fd, const uint8_t *text, size_t len) {
+    if (len > k_max_msg) {
         return -1;
     }
 
-    // Prepare a buffer with 4-byte length prefix followed by the message
-    char wbuf[4 + k_max_msg];
-    memcpy(wbuf, &len, 4);          // Copy length into first 4 bytes
-    memcpy(&wbuf[4], text, len);   // Copy actual message after the length
+    std::vector<uint8_t> wbuf;
+    buf_append(wbuf, (const uint8_t *)&len, 4);
+    buf_append(wbuf, text, len);
+    return write_all(fd, wbuf.data(), wbuf.size());
+}
 
-    // Send message to server
-    if(int32_t err = write_all(fd, wbuf, 4 + len)){
-        return err;
-    }
-
-    // Prepare a buffer to receive the reply
-    char rbuf[4 + k_max_msg + 1];  // +1 for safety
+static int32_t read_res(int fd) {
+    // 4 bytes header
+    std::vector<uint8_t> rbuf;
+    rbuf.resize(4);
     errno = 0;
-
-    // Read the 4-byte length prefix of the reply
-    int32_t err = read_full(fd, rbuf, 4);
-    if(err){
-        msg(errno == 0 ? "EOF" : "read() error");
+    int32_t err = read_full(fd, &rbuf[0], 4);
+    if (err) {
+        if (errno == 0) {
+            msg("EOF");
+        } else {
+            msg("read() error");
+        }
         return err;
     }
 
-    // Get length of the incoming message
-    memcpy(&len, rbuf, 4);
-    if(len > k_max_msg){
+    uint32_t len = 0;
+    memcpy(&len, rbuf.data(), 4);  // assume little endian
+    if (len > k_max_msg) {
         msg("too long");
         return -1;
     }
 
-    // Read the actual message from the server
+    // reply body
+    rbuf.resize(4 + len);
     err = read_full(fd, &rbuf[4], len);
-    if(err){
+    if (err) {
         msg("read() error");
         return err;
     }
 
-    // Print the reply from the server
-    printf("Server says: %.*s\n", len, &rbuf[4]);
+    // do something
+    printf("len:%u data:%.*s\n", len, len < 100 ? len : 100, &rbuf[4]);
     return 0;
 }
 
-int main (){
-    // Create a TCP socket using IPv4
+int main() {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if(fd < 0){
+    if (fd < 0) {
         die("socket()");
-    } 
+    }
 
-    // Set up the server address (127.0.0.1:1111)
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
-    addr.sin_port = ntohs(1111);             // Convert port to network byte order
-    addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK); // Use loopback address (127.0.0.1)
-
-    // Connect to the server
+    addr.sin_port = ntohs(1234);
+    addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK);  // 127.0.0.1
     int rv = connect(fd, (const struct sockaddr *)&addr, sizeof(addr));
-    if(rv){
+    if (rv) {
         die("connect");
     }
 
-    // Send multiple queries to the server
-    int32_t err = query(fd, "hello1");
-    if(err){
-        goto L_DONE; // Exit if there's an error
+    // multiple pipelined requests
+    std::vector<std::string> query_list = {
+        "hello1", "hello2", "hello3",
+        // a large message requires multiple event loop iterations
+        std::string(k_max_msg, 'z'),
+        "hello5",
+    };
+    for (const std::string &s : query_list) {
+        int32_t err = send_req(fd, (uint8_t *)s.data(), s.size());
+        if (err) {
+            goto L_DONE;
+        }
     }
-
-    err = query(fd, "hello2");
-    if(err){
-        goto L_DONE;
-    }
-
-    err = query(fd, "hello3");
-    if(err){
-        goto L_DONE;
+    for (size_t i = 0; i < query_list.size(); ++i) {
+        int32_t err = read_res(fd);
+        if (err) {
+            goto L_DONE;
+        }
     }
 
 L_DONE:
-    // Close the socket and exit
     close(fd);
     return 0;
-};
+}
