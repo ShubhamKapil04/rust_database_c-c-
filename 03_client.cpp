@@ -9,7 +9,7 @@
 #include <sys/socket.h>
 #include <netinet/ip.h>
 #include <string>
-#include <vector> 
+#include <vector>
 
 
 static void msg(const char *msg) {
