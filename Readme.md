@@ -21,3 +21,28 @@ The drawbacks of threads based IO.
 
 1. Learning the Event loop working 
 2. Usage of any daa structure with choice sometime a hashmap is more complex and space or time consuming to use insted of that try array.
+
+7. ## Key-value Server
+
+1. A KV store with just get, set, del commands
+
+len msg1 len msg2 
+_ 4B ... _ 4B ...
+
+A redis request is a list of string, just like a Linux Command. Representing a list as a chuks of bytes is a task of deserialization.
+
+nstr len str1 len str1 ... len strn
+4b   4B ..... 4B....
+
+nstr is the number of items in the list, followed by each item.
+
+7. 2. ## Handling requests
+
+what to do?
+
+3 steps to handle a request 
+1. Parse the command
+2. Process the command and generate a response
+3. Append the response to the output buffer.
+
+
