@@ -22,7 +22,7 @@ The drawbacks of threads based IO.
 1. Learning the Event loop working 
 2. Usage of any daa structure with choice sometime a hashmap is more complex and space or time consuming to use insted of that try array.
 
-7. ## Key-value Server
+7. 1. ## Key-value Server
 
 1. A KV store with just get, set, del commands
 
